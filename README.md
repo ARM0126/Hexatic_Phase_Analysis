@@ -8,7 +8,7 @@ Two-dimensional nanoparticle arrays may form a hexatic phase—characterized by 
 - **Calculating ψ₆:** For each particle, ψ₆ = (1/N) Σ₍ⱼ₎ exp(6iθ₍ᵢⱼ₎) is computed, where the sum is over nearest neighbors.
 - **Computing G₆(D):** The correlation function G₆(D) = ⟨ψ₆*(0) ψ₆(D)⟩ is estimated by binning pairwise correlations over distance.
 
-![Hexatic Phase Diagram](assets/Hexatic_Phase_Analysis/Hexatic.png)
+![Hexatic Phase Diagram](Hexatic.png)
 
 
 ## Features
