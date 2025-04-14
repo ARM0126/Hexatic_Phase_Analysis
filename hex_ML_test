@@ -1,0 +1,307 @@
+#!/usr/bin/env python
+"""
+hexatic_phase_ml.py
+
+This script processes SEM images, extracts nanoparticle centers,
+computes the local bond–orientational order parameter (ψ₆), calculates the bond
+orientation correlation function G₆(D), and extracts two features:
+    - Average |ψ₆| (magnitude of the local order parameter)
+    - Decay exponent (η) from the fit of log(G₆) vs. log(distance)
+
+It then applies KMeans clustering to group images into two clusters,
+which can indicate the presence or absence of hexatic phase characteristics.
+
+Dependencies:
+    - numpy
+    - matplotlib
+    - scikit-image
+    - scipy
+    - scikit-learn
+    - csv
+
+Usage:
+    Place SEM images into the folder "examples/SEM_images" and run:
+    python hexatic_phase_ml.py
+"""
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage import io, filters, feature, img_as_float
+from scipy.spatial import distance_matrix, Delaunay
+from sklearn.linear_model import LinearRegression
+from sklearn.cluster import KMeans
+import csv
+
+# ---------------------------
+# 1. Image Preprocessing & Particle Extraction
+# ---------------------------
+
+def preprocess_image(image_path):
+    """
+    Load and preprocess an SEM image.
+    
+    Steps:
+      - Load image and convert to grayscale float
+      - Apply median filtering to reduce noise
+      - Apply Gaussian blur to smooth the image
+      - Apply Laplacian filter to enhance edges
+    
+    Parameters:
+        image_path (str): Path to the SEM image.
+        
+    Returns:
+        image_processed (ndarray): Processed image for peak detection.
+    """
+    image = img_as_float(io.imread(image_path, as_gray=True))
+    image_med = filters.median(image)
+    image_blur = filters.gaussian(image_med, sigma=5)
+    image_lap = filters.laplace(image_blur)
+    # A simple combination: enhance the blurred image with edge information
+    image_processed = image_blur - image_lap
+    return image_processed
+
+def extract_particle_coords(image, min_distance=5, threshold_rel=0.1):
+    """
+    Detect particle centers using peak local maximum.
+    
+    Parameters:
+        image (ndarray): Preprocessed SEM image.
+        min_distance (int): Minimum separation between peaks (pixels).
+        threshold_rel (float): Relative intensity threshold.
+        
+    Returns:
+        coords (ndarray): Array of [row, col] coordinates.
+    """
+    coords = feature.peak_local_max(image, min_distance=min_distance, threshold_rel=threshold_rel)
+    return coords
+
+# ---------------------------
+# 2. Bond–Orientational Order Calculation
+# ---------------------------
+
+def compute_psi6(coordinates):
+    """
+    Calculate the local bond–orientational order parameter ψ₆ using Delaunay triangulation.
+    
+    ψ₆(i) = (1/N_i) ∑_{j in neighbors} exp(6i θ_ij)
+    
+    Parameters:
+        coordinates (ndarray): Particle positions (in nm).
+        
+    Returns:
+        psi6 (ndarray): Complex order parameter for each particle.
+    """
+    tri = Delaunay(coordinates)
+    n_points = len(coordinates)
+    neighbors = {i: set() for i in range(n_points)}
+    for simplex in tri.simplices:
+        for i in range(3):
+            for j in range(i+1, 3):
+                neighbors[simplex[i]].add(simplex[j])
+                neighbors[simplex[j]].add(simplex[i])
+                
+    psi6 = np.zeros(n_points, dtype=complex)
+    for i, coord in enumerate(coordinates):
+        nb_indices = np.array(list(neighbors[i]))
+        if nb_indices.size == 0:
+            psi6[i] = 0
+        else:
+            # Calculate angle (θ) relative to x-axis for each neighbor
+            dy = coordinates[nb_indices, 0] - coord[0]
+            dx = coordinates[nb_indices, 1] - coord[1]
+            angles = np.arctan2(dy, dx)
+            psi6[i] = np.mean(np.exp(1j * 6 * angles))
+    return psi6
+
+def bond_orientation_correlation(psi6, coordinates, bin_width=27):
+    """
+    Compute the bond orientation correlation function G₆(D):
+    
+      G₆(D) = ⟨ψ₆*(0) ψ₆(D)⟩,
+      
+    by forming all unique pairs from the particle positions.
+    
+    Parameters:
+        psi6 (ndarray): Local bond order parameter for each particle.
+        coordinates (ndarray): Positions (in nm).
+        bin_width (float): Binning width for grouping distances (nm).
+        
+    Returns:
+        bin_centers (ndarray): Center distance for each bin.
+        g6_bin (ndarray): Average correlation values per bin.
+    """
+    dm = distance_matrix(coordinates, coordinates)
+    n_points = len(coordinates)
+    corr_matrix = np.real(np.outer(np.conjugate(psi6), psi6))
+    
+    # Only consider the upper triangle to avoid duplicates
+    iu = np.triu_indices(n_points, k=1)
+    distances = dm[iu]
+    correlations = corr_matrix[iu]
+    
+    max_distance = distances.max()
+    bins = np.arange(0, max_distance + bin_width, bin_width)
+    bin_centers = (bins[:-1] + bins[1:]) / 2
+    g6_bin = np.zeros(len(bin_centers))
+    
+    for i in range(len(bin_centers)):
+        mask = (distances >= bins[i]) & (distances < bins[i+1])
+        if np.any(mask):
+            g6_bin[i] = np.mean(correlations[mask])
+        else:
+            g6_bin[i] = np.nan
+    return bin_centers, g6_bin
+
+def compute_decay_exponent(bin_centers, g6_vals):
+    """
+    Compute the decay exponent η by fitting log(G₆(D)) vs. log(r) using linear regression.
+    For hexatic phase, G₆(D) ~ D^(-η).
+    
+    Parameters:
+        bin_centers (ndarray): Centers of the distance bins.
+        g6_vals (ndarray): G₆(D) values per bin.
+        
+    Returns:
+        decay_exp (float): Decay exponent from the linear regression fit.
+        regression (LinearRegression): Fitted regression model (for plotting).
+    """
+    # Exclude bins with NaN or non-positive G6 values for log transformation
+    mask = (g6_vals > 0) & (~np.isnan(g6_vals))
+    if np.sum(mask) < 2:
+        return np.nan, None
+    X = np.log10(bin_centers[mask]).reshape(-1, 1)
+    y = np.log10(g6_vals[mask])
+    
+    reg = LinearRegression().fit(X, y)
+    decay_exp = -reg.coef_[0]  # Negative slope gives η
+    return decay_exp, reg
+
+# ---------------------------
+# 3. Machine Learning: Feature Extraction & Clustering
+# ---------------------------
+
+def extract_features_from_image(image_path, conversion_factor=2.335766423, 
+                                min_distance=5, threshold_rel=0.1, bin_width=27):
+    """
+    Process a single image and extract two features:
+      - Feature 1: Mean of |ψ₆|
+      - Feature 2: Decay exponent η from G₆(D)
+    
+    Parameters:
+        image_path (str): Path to SEM image.
+        conversion_factor (float): Pixels-to-nm conversion.
+        min_distance (int): Minimum pixel separation for particle detection.
+        threshold_rel (float): Relative threshold for peak detection.
+        bin_width (float): Bin width for G₆(D) computation.
+        
+    Returns:
+        features (tuple): (avg_psi6_magnitude, decay_exponent)
+    """
+    proc_image = preprocess_image(image_path)
+    coords_pixels = extract_particle_coords(proc_image, min_distance, threshold_rel)
+    
+    if coords_pixels.shape[0] < 3:
+        print(f"Insufficient particles detected in {os.path.basename(image_path)}.")
+        return None, None
+    
+    # Convert pixel coordinates to nm
+    coords_nm = coords_pixels * conversion_factor
+    psi6 = compute_psi6(coords_nm)
+    avg_psi6 = np.mean(np.abs(psi6))
+    bin_centers, g6_vals = bond_orientation_correlation(psi6, coords_nm, bin_width)
+    decay_exp, _ = compute_decay_exponent(bin_centers, g6_vals)
+    
+    return avg_psi6, decay_exp
+
+def cluster_images(feature_list, image_names):
+    """
+    Perform KMeans clustering on the extracted features from each image.
+    
+    Parameters:
+        feature_list (list of tuples): List of (avg_psi6, decay_exponent) features.
+        image_names (list): Corresponding image file names.
+    
+    Returns:
+        labels (ndarray): Cluster labels assigned to each image.
+    """
+    # Filter out images that did not produce features
+    features = [feat for feat in feature_list if None not in feat]
+    valid_names = [name for feat, name in zip(feature_list, image_names) if None not in feat]
+    
+    if len(features) < 2:
+        print("Not enough valid images for clustering.")
+        return None, valid_names
+    
+    X = np.array(features)
+    print("Extracted features (avg_psi6, decay_exp):")
+    for name, feat in zip(valid_names, X):
+        print(f"{name}: {feat}")
+    
+    # Cluster into two groups using KMeans
+    kmeans = KMeans(n_clusters=2, random_state=42)
+    labels = kmeans.fit_predict(X)
+    return labels, valid_names
+
+# ---------------------------
+# 4. Main Execution Pipeline
+# ---------------------------
+
+def process_all_images(image_folder, conversion_factor=2.335766423, min_distance=5,
+                       threshold_rel=0.1, bin_width=27):
+    """
+    Processes all SEM images in the folder to extract features and apply ML clustering.
+    
+    Parameters:
+        image_folder (str): Folder containing SEM image files.
+    
+    Returns:
+        None
+    """
+    feature_list = []
+    image_names = []
+    
+    for file in os.listdir(image_folder):
+        if file.lower().endswith(('.png', '.jpg', '.tif', '.tiff')):
+            image_path = os.path.join(image_folder, file)
+            print(f"\nProcessing image: {file}")
+            avg_psi6, decay_exp = extract_features_from_image(image_path, conversion_factor,
+                                                               min_distance, threshold_rel, bin_width)
+            if avg_psi6 is not None and decay_exp is not None:
+                feature_list.append((avg_psi6, decay_exp))
+                image_names.append(file)
+            else:
+                print(f"Skipping image {file} due to insufficient data.")
+    
+    labels, valid_names = cluster_images(feature_list, image_names)
+    
+    if labels is not None:
+        print("\nClustering Results:")
+        for name, label in zip(valid_names, labels):
+            # You may choose to interpret one cluster as "Hexatic" based on domain knowledge
+            phase = "Hexatic Phase" if label == 0 else "Non-Hexatic Phase"
+            print(f"{name}: Cluster {label} ({phase})")
+    
+    # Optionally, save features and labels to CSV for further analysis
+    with open('ml_hexatic_features.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Image", "Avg_psi6", "Decay_Exponent", "Cluster_Label"])
+        if labels is not None:
+            for name, feat, label in zip(valid_names, feature_list, labels):
+                writer.writerow([name, feat[0], feat[1], label])
+        else:
+            for name, feat in zip(image_names, feature_list):
+                writer.writerow([name, feat[0], feat[1], "N/A"])
+    print("Features and clustering results exported to ml_hexatic_features.csv")
+
+if __name__ == '__main__':
+    # Folder containing SEM images (update path as needed)
+    image_folder = 'examples/SEM_images'
+    
+    # Parameters (adjust if necessary)
+    conversion_factor = 2.335766423   # Pixel to nm conversion factor
+    min_distance = 5                  # Minimum pixel distance for peak detection
+    threshold_rel = 0.1               # Relative threshold for particle detection
+    bin_width = 27                    # Bin width (nm) for computing G₆(D)
+    
+    process_all_images(image_folder, conversion_factor, min_distance, threshold_rel, bin_width)
