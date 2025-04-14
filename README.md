@@ -25,6 +25,7 @@ Two-dimensional nanoparticle arrays may form a hexatic phase—characterized by 
 - **Correlation Analysis:**  
   Bins the pairwise correlations to produce G₆(D), providing insight into quasi–long-range orientational order.
 
+## Reference: 
 
   [1] - Mohtasebzadeh, A. R., Davidson, J. C., Livesey, K. L., & Crawford, T. M. (2022). Tunability and ordering in 2D arrays of magnetic nanoparticles assembled via extreme field gradients. Advanced Materials Interfaces, 9(26), 2201056.
 
