@@ -8,6 +8,8 @@ Two-dimensional nanoparticle arrays may form a hexatic phase—characterized by 
 - **Calculating ψ₆:** For each particle, ψ₆ = (1/N) Σ₍ⱼ₎ exp(6iθ₍ᵢⱼ₎) is computed, where the sum is over nearest neighbors.
 - **Computing G₆(D):** The correlation function G₆(D) = ⟨ψ₆*(0) ψ₆(D)⟩ is estimated by binning pairwise correlations over distance.
 
+![Hexatic Phase Diagram](main/Hexatic.png)
+
 
 ## Features
 
@@ -25,3 +27,5 @@ Two-dimensional nanoparticle arrays may form a hexatic phase—characterized by 
 
 
   [1] - Mohtasebzadeh, A. R., Davidson, J. C., Livesey, K. L., & Crawford, T. M. (2022). Tunability and ordering in 2D arrays of magnetic nanoparticles assembled via extreme field gradients. Advanced Materials Interfaces, 9(26), 2201056.
+
+
